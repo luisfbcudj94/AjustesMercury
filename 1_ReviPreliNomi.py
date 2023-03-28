@@ -7,6 +7,7 @@ from turtle import color
 import PySimpleGUI as sg
 import pandas as pd
 import numpy as np
+import openpyxl
 
 
 #------Funciones--------------------------------------------------------------#
@@ -152,12 +153,17 @@ def ingresos(path_novedades,df_revision):
 
     xls = pd.ExcelFile(path_novedades)    
     df14_6=xls.parse(5)
+
+    
     df14_6=df14_6.iloc[:,[0,3,4,5]].dropna()
     df14_6[df14_6.columns[0]]=df14_6[df14_6.columns[0]].astype("int64")
     df14_6=df14_6[df14_6[df14_6.columns[3]]<=fecha].reset_index(drop=True)
+    
+    
 
     #Listas:
     CC_INGRE=list(df14_6[df14_6.columns[0]])
+    
 
     #Excluimos Documento de extranjeria dado que no coincide con el archivo 1
     CC_AUX=[]
@@ -168,8 +174,10 @@ def ingresos(path_novedades,df_revision):
             temp=value
             CC_AUX.append(temp)
     CC_INGRE=CC_AUX
-
+    
     df14_6=df14_6[df14_6[df14_6.columns[0]].isin(CC_INGRE)].reset_index(drop=True)
+    
+    
     df14_6.rename(columns={df14_6.columns[0]:"CC"},inplace=True)
     df14_6.rename(columns={df14_6.columns[2]:"TIPO SALARIO"},inplace=True)
 
@@ -181,6 +189,7 @@ def ingresos(path_novedades,df_revision):
 
     df_replace_2["SALARIO TOTAL"]=list(df_replace_2.merge(df14_6,on="CC",how="left")["COMPENSACION "])
     df_replace_2["TIPO DE SALARIO "]=list(df_replace_2.merge(df14_6,on="CC",how="left")["TIPO SALARIO"])
+    
 
     return df_replace_2,df_no_replace_2
 
@@ -258,26 +267,25 @@ def compila_archivo(path_nom_hori,path_maestro,path_revi_nomi,path_novedades,pat
     
     
     
-    
     df_revision=df_revision.merge(rev_nom_anterior(path_revi_nomi),on="CC",how="left")
     df_revision['SALARIO TOTAL']=df_revision['SALARIO TOTAL'].astype(float)
     
     
-    global linea1
-    linea1 = df_revision
+    
     df_revision=pd.concat([novedades_nomina(path_novedades,df_revision)[0],novedades_nomina(path_novedades,df_revision)[1]]).reset_index(drop=True)
 
-    global linea2
-    linea2 = df_revision
+
     
     df_revision=pd.concat([ingresos(path_novedades,df_revision)[0],ingresos(path_novedades,df_revision)[1]]).reset_index(drop=True)
 
+    
     df_revision=crea_archivo_pruebas(path_archivo_base,distribucion_salario(df_revision))
     
 
     return df_revision
 
 def generarRuta(fecha_corte,rutaInput):
+    
 
     raiz = rutaInput
     rutaUser = raiz[0:raiz[9:len(raiz)].index("/")+9]
@@ -289,8 +297,8 @@ def generarRuta(fecha_corte,rutaInput):
 
 def calculo_conceptos(path_novedades,path_facturacion,df_pruebas):
 
-    global fecha
-    global ruta_nomina_horizontal
+    
+    
 
     """
     Esta función calcula sobre el archivo base los diferentes conceptos de nómina por cada empleado. \n
@@ -517,9 +525,25 @@ def calculo_conceptos(path_novedades,path_facturacion,df_pruebas):
     df_pruebas.insert(163, "REVISIÓN 3903", np.nan)
     df_pruebas.insert(166, "REVISIÓN 3920", np.nan)
     
+    global merged_data,df_IBC,dftest,dfinicial,df_merged
+    
+    dfinicial = df_pruebas
+    df_IBC = agregar_columna_IBC('02')
+    merged_data = pd.merge(df_IBC, df_pruebas, on='CC')
+    df_pruebas = df_pruebas.join(merged_data['IBC 3-01-0'])
+    dftest = df_pruebas
+    
+    # ----INICIO CODIGO DE MERGE FUNCIONANDO
+    # Unir los dataframes usando el método merge y especificar que es unir por la columna 'CC'
+    df_merged = pd.merge(dfinicial, df_IBC[['CC', 'IBC 3-01-0']], on='CC', how='left')
 
-
-
+    # Reemplazar los valores NaN, es decir los registros que no están en df1, con el valor 99
+    df_merged['IBC 3-01-0'] = df_merged['IBC 3-01-0'].fillna(0)
+    
+    #Eliminar comas y convertir a np.float
+    df_merged['IBC 3-01-0'] = df_merged['IBC 3-01-0'].replace(',', '', regex=True).astype(np.float64)
+    # ----FIN CODIGO DE MERGE FUNCIONANDO
+    
     # Start the xlsxwriter
     #writer = pd.ExcelWriter('resultados/NOMINA/2022/Formato revisión nómina'+mes+'3.xlsx', engine='xlsxwriter')
     #writer = pd.ExcelWriter(ruta_guardar+'/Formato revisión preliminar de nómina.xlsx', engine='xlsxwriter')
@@ -528,7 +552,8 @@ def calculo_conceptos(path_novedades,path_facturacion,df_pruebas):
 
     writer = pd.ExcelWriter(rutaGuardarArchivos, engine="xlsxwriter")
 
-    df_pruebas.to_excel(writer, sheet_name='Hoja1', index=False)
+    # df_pruebas.to_excel(writer, sheet_name='Hoja1', index=False)
+    df_merged.to_excel(writer, sheet_name='Hoja1', index=False)
     workbook  = writer.book
     worksheet = writer.sheets['Hoja1']
 
@@ -820,8 +845,479 @@ def calculo_conceptos(path_novedades,path_facturacion,df_pruebas):
 
     writer.save()
     writer.close()
+    
+    #calcular_0740()
+    
+#----EDITADO POR LUIS ALEJANDRO PÉREZ ABRIL-----------------------------------#
+#----REVISIÓN DIFERENCIAS INCAPACIDADES---------------------------------------#
+
+#Este método evaluará de nuevo el concepto 0740, atenderá los casos que hayan 
+#tenido aumento de salario 
+def leer_RevPreliminar():
+    
+    
+    xls = pd.ExcelFile('.\\resultados\Revision prueba-2.xlsm')
+
+    df14_16=xls.parse(0,header=0)
+    
+    
+    return df14_16
+
+def leer_RevPreliminarxlsx():
+    
+    
+    xls = pd.ExcelFile('.\\resultados\Revision prueba-2.xlsx')
+
+    df14_16=xls.parse(0,header=0)
+    
+    
+    return df14_16
+
+def leer_NovedadesNomina():
+    
+    
+    xls = pd.ExcelFile('.\\resultados\\14.NOVEDADES DE NOMINA 20230201.xlsm')
+    
+    df = pd.read_excel(xls, sheet_name='VARIACIÓN SALARIO', header=2)
+
+    
+    
+    return df
+
+def agregar_formulas(df_pruebas,worksheet,writer):
+    
+    #Formulas:
+
+    #Salario basico
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=N{row}*L{row}'
+        worksheet.write_formula(f"O{row}", formula)
+
+    #Salario fli
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=N{row}*M{row}'
+        worksheet.write_formula(f"P{row}", formula)
+
+    #Validación Salario
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=(O{row}+P{row})-N{row}'
+        worksheet.write_formula(f"Q{row}", formula)
+
+    #agregamos día de la familia:
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=IF(AN{row}=0,0,1)'
+        worksheet.write_formula(f"W{row}", formula)
+
+    #agregamos REVISIÓN DÍAS
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=SUM(R{row}:AF{row})-T{row}'
+        worksheet.write_formula(f"AH{row}", formula)
+
+    #agregamos REVISIÓN 0010
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=IF(F{row}="LEY 50",((O{row}/30)*R{row})-AJ{row},0)'
+        worksheet.write_formula(f"AK{row}", formula)
+
+    #agregamos REVISIÓN 0015
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=IF(F{row}="INTEGRAL",((O{row}/30)*R{row})-AL{row},0)'
+        worksheet.write_formula(f"AM{row}", formula)
+
+    #agregamos REVISIÓN 0024
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=((O{row}/30)*W{row})-AN{row}'
+        worksheet.write_formula(f"AO{row}", formula)
+
+    # Agregamos REVISIÓN 0025
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=IF(F{row}="APRENDIZ",((O{row}/30)*R{row})-AP{row},0)'
+        worksheet.write_formula(f"AQ{row}", formula)
+
+    # REVISIÓN 0316:
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=AU{row}-AT{row}'
+        worksheet.write_formula(f"AV{row}", formula)
+
+    #0317-ATENCION DISPONIBILIDAD DIAS:
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=AX{row}-AW{row}'
+        worksheet.write_formula(f"AY{row}", formula)
+
+    # 0340-ATARJETA ALIMENTACIÓN:
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=BA{row}-AZ{row}'
+        worksheet.write_formula(f"BB{row}", formula)
+
+    # 0740-AUXILIO EMPRESA INCAPACIDAD:
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=IF(AND(S{row}<=2,F{row}<>"INTEGRAL"),((O{row}/30)*S{row})-BC{row},IF(AND(S{row}>2,F{row}<>"INTEGRAL"),((O{row}/30)*2)-BC{row},IF(AND(S{row}<=2,F{row}="INTEGRAL"),(((O{row}*70%)/30)*S{row})-BC{row},IF(AND(S{row}>2,F{row}="INTEGRAL"),(((O{row}*70%)/30)*2)-BC{row},0))))'
+        worksheet.write_formula(f"BD{row}", formula)
+
+    # 0791 AUXILIO DE CONECTIVIDAD: Solo a quienes ganen menos de 2 smmlv
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=IF(AND(O{row}<=2000000,BE{row}<>0),True,False)'
+        worksheet.write_formula(f"BF{row}", formula)
+
+    # 0920 AVACACIONES EN DINERO:
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=((O{row}/30)*T{row})-BG{row}'
+        worksheet.write_formula(f"BH{row}", formula)
+
+    # 0923-AUXILIO VACACIONES RFI: 
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=((P{row}/30)*T{row})-BI{row}'
+        worksheet.write_formula(f"BJ{row}", formula)
+
+    # 1200-REEMBOLSO DE GASTOS: 
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=BL{row}-BK{row}'
+        worksheet.write_formula(f"BM{row}", formula)
+
+    # 1600-ENFERMEDAD GENERAL: 
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=IF(AND(S{row}>=0,S{row}<=2),0,((N{row}/30)*S{row}-2)-BN{row})'
+        worksheet.write_formula(f"BO{row}", formula)
+
+    #1670-LICENCIA REMUNERADA  
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=((O{row}/30)*AA{row})-BP{row}'
+        worksheet.write_formula(f"BQ{row}", formula)
+
+    # 1671-CALAMIDAD DOMESTICA    
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=((O{row}/30)*Z{row})-BR{row}'
+        worksheet.write_formula(f"BS{row}", formula)
+
+    # 1673-LICENCIA POR LUTO  
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=((O{row}/30)*Z{row})-BT{row}'
+        worksheet.write_formula(f"BU{row}", formula)
+
+    # 1730-VACACIONES DISFRUTADAS 
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=((O{row}/30)*AF{row})-BV{row}'
+        worksheet.write_formula(f"BW{row}", formula)
+
+    # 1950-VAPORTE VOLUNTARIO INST.
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=(P{row}*4%)-BY{row}'
+        worksheet.write_formula(f"BZ{row}", formula)
+
+    #1953- TARJETA GASOLINA RFI
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=CB{row}-CA{row}'
+        worksheet.write_formula(f"CC{row}", formula)
+
+    #1954- BENEFICIO PLAN
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=P{row}-AS{row}-AZ{row}-BY{row}-CA{row}-CD{row}-CF{row}-CH{row}'
+        worksheet.write_formula(f"CE{row}", formula)
+
+    #1956- BENEFICIO PLAN 
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=P{row}-AS{row}-AZ{row}-BY{row}-CA{row}-CD{row}-CF{row}-CH{row}'
+        worksheet.write_formula(f"CG{row}", formula)
+
+    #1957- FLEX BEN APOR 
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=P{row}-AS{row}-AZ{row}-BY{row}-CA{row}-CD{row}-CF{row}-CH{row}'
+        worksheet.write_formula(f"CI{row}", formula)
+
+    #1970-APORTE INSTITUCIONAL 
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=(P{row}/30*R{row})*0.075-CJ{row}' 
+        worksheet.write_formula(f"CK{row}", formula)
+
+    #1971-APORTE VOLUNTARIO PLUS 
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=(P{row}/30*R{row})*0.1766-CL{row}' 
+        worksheet.write_formula(f"CM{row}", formula)
+
+    #2500-APORTE SALUD EGM 
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=IF(F{row}="INTEGRAL",(AJ{row}+AL{row}+AN{row}+AT{row}+AW{row}+BC{row}+BN{row}+BP{row}+BR{row}+BT{row}+BV{row})*0.7*0.04,(AJ{row}+AL{row}+AN{row}+AT{row}+AW{row}+BC{row}+BN{row}+BP{row}+BR{row}+BT{row}+BV{row})*0.04)-CO{row}' 
+        worksheet.write_formula(f"CP{row}", formula)
+
+    #2510-FONDO DE SOLIDARIDAD
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=IF(AJ{row}>4000000,IF(F{row}="INTEGRAL",(AJ{row}+AL{row}+AN{row}+AT{row}+AW{row}+BC{row}+BN{row}+BP{row}+BR{row}+BT{row}+BV{row})*0.7*0.01,(AJ{row}+AL{row}+AN{row}+AT{row}+AW{row}+BC{row}+BN{row}+BP{row}+BR{row}+BT{row}+BV{row})*0.01),0)-CQ{row}'
+        worksheet.write_formula(f"CR{row}", formula)
+
+    #2520-APORTES PENSION IVM
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=IF(F{row}="INTEGRAL",(AJ{row}+AL{row}+AN{row}+AT{row}+AW{row}+BC{row}+BN{row}+BP{row}+BR{row}+BT{row}+BV{row})*0.7*0.04,(AJ{row}+AL{row}+AN{row}+AT{row}+AW{row}+BC{row}+BN{row}+BP{row}+BR{row}+BT{row}+BV{row})*0.04)-CT{row}'
+        worksheet.write_formula(f"CU{row}", formula)
+
+    #2704-LIBRANZA DAVIVIENDA
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=CW{row}-CV{row}'
+        worksheet.write_formula(f"CX{row}", formula)
+
+    #2705-LIBRANZA BANCOLOMBIA
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=CZ{row}-CY{row}'
+        worksheet.write_formula(f"DA{row}", formula)
+
+    #2709-PRESTAMO COMFAMA
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=DC{row}-DB{row}'
+        worksheet.write_formula(f"DD{row}", formula)
+
+    #2710-SERVICIOS COMFAMA
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=DF{row}-DE{row}'
+        worksheet.write_formula(f"DG{row}", formula)
+
+    #2712-DESCUENTO EMI
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=DI{row}-DH{row}'
+        worksheet.write_formula(f"DJ{row}", formula)
+
+    #2713-DESCUENTO PREVER
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=DL{row}-DK{row}'
+        worksheet.write_formula(f"DM{row}", formula)
+
+    #2714-POLIZA DE AUTO
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=DO{row}-DN{row}'
+        worksheet.write_formula(f"DP{row}", formula)
+
+    #2715-POLIZA DE VIDA
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=DR{row}-DQ{row}'
+        worksheet.write_formula(f"DS{row}", formula)
+
+    #2724-DESCUENTO MOVISTAR
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=DU{row}-DT{row}'
+        worksheet.write_formula(f"DV{row}", formula)
+
+    #2737-POLIZA SURA PAC
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=DX{row}-DW{row}'
+        worksheet.write_formula(f"DY{row}", formula)
+
+    #2739-AHORRO FEMTI
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=EA{row}-DZ{row}'
+        worksheet.write_formula(f"EB{row}", formula)
+
+    #3210-APORTE VOLUNTARIO A
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=ED{row}-EC{row}'
+        worksheet.write_formula(f"EE{row}", formula)
+
+    #3213-APORTE AFC
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=EG{row}-EF{row}'
+        worksheet.write_formula(f"EH{row}", formula)
+
+    #3222-APORTE VOLUNTARIO PLUS
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=CL{row}-EI{row}'
+        worksheet.write_formula(f"EJ{row}", formula)
+
+    #3602-DESCUENTO MEDICINA COLSANITAS
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=EL{row}-EK{row}'
+        worksheet.write_formula(f"EM{row}", formula)
+
+    #3604-DESCUENTO MEDICINA MEDISANITAS
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=EO{row}-EN{row}'
+        worksheet.write_formula(f"EP{row}", formula)
+
+    #3607-MEDICINA PREPAGADA SURA - GLOBAL
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=ER{row}-EQ{row}'
+        worksheet.write_formula(f"ES{row}", formula)
+
+    #3608-MEDICINA PREPAGADA SURA - ESPECIAL
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=EU{row}-ET{row}'
+        worksheet.write_formula(f"EV{row}", formula)
+
+    #3609-MEDICINA PREPAGADA SURA - CLASICA
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=EX{row}-EW{row}'
+        worksheet.write_formula(f"EY{row}", formula)
+
+    #3611-MEDICINA PREPAGADA COOMEVA
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=FA{row}-EZ{row}'
+        worksheet.write_formula(f"FB{row}", formula)
+
+    #3900-APORTE VOLUNTARIO INST. 
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=BY{row}-FC{row}'
+        worksheet.write_formula(f"FD{row}", formula)
+
+    #3901-TARJETA ALIMENTACIÓN 
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=AZ{row}-FE{row}'
+        worksheet.write_formula(f"FF{row}", formula)
+
+    #3903-TARJETA GASOLINA RFI
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=CA{row}-FG{row}'
+        worksheet.write_formula(f"FH{row}", formula)
+
+    #3920-APORTE INSTITUCIONAL
+    for row in range(2,df_pruebas.shape[0]+2):
+        formula = f'=CJ{row}-FJ{row}'
+        worksheet.write_formula(f"FK{row}", formula)
+        
+    writer.save()
+    writer.close()
+
+def agregar_columna_IBC(mes):
+    
+    # Restar 1 dia al mes actual, para tomar ibc del mes anterior
+    mesInt = int(mes)
+    mesIbc = mesInt -1
+
+    if mesIbc == 0:
+        mesIbc = '12'
+    else:
+        mesIbc = str(mesIbc).zfill(2)
+
+    # Leer archivo de ibc
+    df = pd.read_excel(".\\resultados\IBC.xls", sheet_name="ACUMU_INFOR_XEMPLO", header=7)
+
+    # Eliminar filas y columnas basura
+    column_names = df.columns
+    columns_to_drop = [index for index, name in enumerate(column_names) if 'Unnamed' in name]
+    dataframe = df.drop(df.columns[columns_to_drop], axis=1)
+    dataframe = dataframe.dropna(how='all')
 
 
+    # Econtrar cual es el mes de interes para tomar el ibc, toma el mes actual - 1
+    columnasDf = dataframe.columns
+    posicion = None
+
+    for i, valor in enumerate(columnasDf):
+        if valor.find("-"+mesIbc+"-") != -1:
+            posicion = i
+            break
+
+    if posicion is not None:
+        columnaIBC = columnasDf[posicion]
+    else:
+        columnaIBC = None
+
+    df_ibc = pd.DataFrame(columns=['CODIGO', 'IBC'+columnaIBC])
+
+    # Recorrer las filas para organizar el dataframe, separar por código e IBC
+    valueCodigo = ''
+    count = 0
+    # recorrer las filas del dataframe original
+    for index, row in dataframe.iterrows():
+        count = count +1
+        # verificar si la longitud de CODIGO es mayor a 4
+        if len(row['CODIGO']) > 4:
+            
+            nueva_fila = {'CODIGO': row['CODIGO'], 'IBC '+columnaIBC: '0'}
+            valueCodigo = row['CODIGO']
+        else:
+            # verificar si el valor de CODIGO es igual a '9500'
+            if row['CODIGO'] == '9500':
+                nueva_fila = {'CODIGO': valueCodigo, 'IBC '+columnaIBC: row[columnaIBC]}
+                df_ibc = df_ibc.append(nueva_fila, ignore_index=True)
+            
+    # Quitar el digito de verificacion de cc 
+
+    def limpiar_codigo(codigo):
+        # Separamos el código por las guiones -
+        codigo_sep = codigo.split("-")
+        # Si la cantidad de guiones es mayor a 2, solo nos quedamos con el primero y el último
+        if len(codigo_sep) > 2:
+            codigo_sep = [codigo_sep[0], codigo_sep[-1]]
+        # Unimos nuevamente el código con un guion -
+        codigo_limpio = "-".join(codigo_sep)
+        return codigo_limpio
+
+    # Aplicamos la función a la columna CODIGO
+    df_ibc['CODIGO'] = df_ibc['CODIGO'].apply(limpiar_codigo)
+
+    # Dividir la columna 'codigo' en dos utilizando el carácter '-'
+    codigo_dividido = df_ibc['CODIGO'].str.split('-', expand=True)
+
+    # Asignar la primera columna al nuevo dataframe 'df_nuevo' como la columna 'CC'
+    df_ibc = df_ibc.assign(CC=codigo_dividido[0])
+
+    # Asignar la segunda columna al dataframe 'df_nuevo' como la columna 'NOMBRE'
+    df_ibc['NOMBRE'] = codigo_dividido[1]
+
+    # Quitar los espacios en blanco al principio y al final de la columna 'NOMBRE'
+    df_ibc['NOMBRE'] = df_ibc['NOMBRE'].str.strip()
+
+    df_ibc = df_ibc[['CC','NOMBRE','IBC '+columnaIBC]]
+    
+    df_ibc['CC'] = df_ibc['CC'].apply(int)
+    
+    return df_ibc
+
+    
+def calcular_0740():
+    
+    def calculo_fila(fila):
+        salario_total = fila["SALARIO BASICO "]
+        dias_incapacidad = fila["DIAS INCAPACIDAD"]
+        if dias_incapacidad > 2:
+          result = salario_total / 30 * 2
+        else:
+          result = salario_total / 30 * dias_incapacidad
+        return result
+    
+    df_Novedades_Nomina = leer_NovedadesNomina()
+    df_RevPrel = leer_RevPreliminar()
+    
+    global resultados,df_filtrado
+    print("1")
+    df_filtrado = df_RevPrel.loc[abs(df_RevPrel['REVISIÓN 0740']) > 1000.0]
+    
+    print("2")
+    resultados = df_filtrado.apply(calculo_fila, axis=1)
+    print("3")
+    df_filtrado["0740-AJUSTADO"] = resultados
+    
+
+    
+    print("4")
+    df_RevPrelxlsx = leer_RevPreliminar()
+    print("5")
+    cc_en_df4 = set(df_filtrado['CC'])
+    # Ahora, para cada cc en dfrevpreli que esté en df4, reemplazaremos el salario en dfrevpreli con el de df4
+    for i, row in df_RevPrelxlsx.iterrows():
+        if row['CC'] in cc_en_df4:
+            salario_actual = df_filtrado.loc[df_filtrado['CC'] == row['CC'], '0740-AJUSTADO'].iloc[0]
+            df_RevPrelxlsx.at[i, '0740-AUXILIO EMPRESA '] = salario_actual
+        
+    #--------------
+
+    print("7")
+    writer = pd.ExcelWriter('.\\resultados\\Revision prueba-2DEMO.xlsx', engine="xlsxwriter")
+    print("8")
+    df_RevPrelxlsx.to_excel(writer, sheet_name='Hoja1', index=False)
+    print("9")
+    workbook  = writer.book
+    print("10")
+    worksheet = writer.sheets['Hoja1']
+    print("11")
+    agregar_formulas(df_RevPrelxlsx,worksheet,writer)
+    #--------------
+    #writer = pd.ExcelWriter('output.xlsx')
+    
+    # Write the DataFrame to the Excel file
+    #df_RevPrelxlsx.to_excel(writer)
+
+    # Save the Excel file
+    #writer.save()
+    
+    
+    print("")
+    
 
 
 #----Interfaz-----------------------------------------------------------------#
