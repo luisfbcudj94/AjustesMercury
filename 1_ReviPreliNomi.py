@@ -2,16 +2,26 @@
 
 #----Librerías----------------------------------------------------------------#
 
-from msilib import text
+from msilib import text 
 from turtle import color
 import PySimpleGUI as sg
 import pandas as pd
 import numpy as np
 import openpyxl
+import string
 
 
 #------Funciones--------------------------------------------------------------#
 
+# Encontrar la columna en excel ingresando un valor numerico. La 0 es la A.
+def num_a_col_excel(num):
+    col = ""
+    while num > 0:
+        num -= 1
+        col = chr(num % 26 + 65) + col
+        num = num // 26
+    return col
+    
 #FORMATEA ARCHIVO DE NOMINA HORIZONTAL
 def format_nomina_horizontal(path_nom_hori):
 
@@ -126,7 +136,7 @@ def novedades_nomina(path_novedades,df_revision):
     
     df14_16.rename(columns={"CEDULA ":"CC",df14_16.columns[1]:"TOTAL SALARIO"},inplace=True)
 
-    
+    global CC_INCRE,df_replace
     #Creamos lista de de CEDULA y de TOTAL SALARIO:
     CC_INCRE=list(df14_16["CC"])
 
@@ -136,6 +146,8 @@ def novedades_nomina(path_novedades,df_revision):
     df_no_replace=df_revision[df_revision["CC"].isin(CC_INCRE)==False]
 
     df_replace["SALARIO TOTAL"]=list(df_replace.merge(df14_16,on="CC",how="left")["TOTAL SALARIO"])
+    
+    df_replace["AUMENTO DE SALARIO"] = df_replace["CC"].apply(lambda x: "SI" if x in CC_INCRE else "NO")
 
 
     return df_replace, df_no_replace
@@ -261,6 +273,8 @@ def compila_archivo(path_nom_hori,path_maestro,path_revi_nomi,path_novedades,pat
     Esta función integra todas las funciones que realizan cambios y uniones de archivos y retorna \n
     un solo DataFrame con el formato final listo para realizar los cáldulos de conceptos. 
     """
+
+    global df_revision
 
     df_revision=format_nomina_horizontal(path_nom_hori).merge(maestro(path_maestro),on="CC",how="left")
     df_revision.rename(columns={"codigo_empleado":"CODIGO","fecha_ingreso_contrato":"FECHA DE INGRESO"},inplace=True)
@@ -528,20 +542,21 @@ def calculo_conceptos(path_novedades,path_facturacion,df_pruebas):
     global merged_data,df_IBC,dftest,dfinicial,df_merged
     
     dfinicial = df_pruebas
-    df_IBC = agregar_columna_IBC('02')
+    mes = fecha.split('-')[1]
+    df_IBC = agregar_columna_IBC(mes)
     merged_data = pd.merge(df_IBC, df_pruebas, on='CC')
-    df_pruebas = df_pruebas.join(merged_data['IBC 3-01-0'])
+    # df_pruebas = df_pruebas.join(merged_data['IBC'])
     dftest = df_pruebas
     
     # ----INICIO CODIGO DE MERGE FUNCIONANDO
     # Unir los dataframes usando el método merge y especificar que es unir por la columna 'CC'
-    df_merged = pd.merge(dfinicial, df_IBC[['CC', 'IBC 3-01-0']], on='CC', how='left')
+    df_merged = pd.merge(dfinicial, df_IBC[['CC', 'IBC']], on='CC', how='left')
 
     # Reemplazar los valores NaN, es decir los registros que no están en df1, con el valor 99
-    df_merged['IBC 3-01-0'] = df_merged['IBC 3-01-0'].fillna(0)
+    df_merged['IBC'] = df_merged['IBC'].fillna(0)
     
     #Eliminar comas y convertir a np.float
-    df_merged['IBC 3-01-0'] = df_merged['IBC 3-01-0'].replace(',', '', regex=True).astype(np.float64)
+    df_merged['IBC'] = df_merged['IBC'].replace(',', '', regex=True).astype(np.float64)
     # ----FIN CODIGO DE MERGE FUNCIONANDO
     
     # Start the xlsxwriter
@@ -559,8 +574,11 @@ def calculo_conceptos(path_novedades,path_facturacion,df_pruebas):
 
 
     # Create a for loop to start writing the formulas to each row
+    global col_IBC
+    col_IBC = num_a_col_excel(df_merged.columns.get_loc('IBC')+1)
 
     #Formulas:
+        
 
     #Salario basico
     for row in range(2,df_pruebas.shape[0]+2):
@@ -588,7 +606,7 @@ def calculo_conceptos(path_novedades,path_facturacion,df_pruebas):
         worksheet.write_formula(f"AH{row}", formula)
 
     #agregamos REVISIÓN 0010
-    for row in range(2,df_pruebas.shape[0]+2):
+    for row in range(2,df_pruebas.shape[0]+2): 
         formula = f'=IF(F{row}="LEY 50",((O{row}/30)*R{row})-AJ{row},0)'
         worksheet.write_formula(f"AK{row}", formula)
 
@@ -623,9 +641,18 @@ def calculo_conceptos(path_novedades,path_facturacion,df_pruebas):
         worksheet.write_formula(f"BB{row}", formula)
 
     # 0740-AUXILIO EMPRESA INCAPACIDAD:
+    # for row in range(2,df_pruebas.shape[0]+2):
+    #     formula = f'=IF(AND(S{row}<=2,F{row}<>"INTEGRAL"),((O{row}/30)*S{row})-BC{row},IF(AND(S{row}>2,F{row}<>"INTEGRAL"),((O{row}/30)*2)-BC{row},IF(AND(S{row}<=2,F{row}="INTEGRAL"),(((O{row}*70%)/30)*S{row})-BC{row},IF(AND(S{row}>2,F{row}="INTEGRAL"),(((O{row}*70%)/30)*2)-BC{row},0))))'
+    #     worksheet.write_formula(f"BD{row}", formula)
+
+
+    # 0740-AUXILIO EMPRESA INCAPACIDAD: EDITADO LUIS PEREZ
     for row in range(2,df_pruebas.shape[0]+2):
-        formula = f'=IF(AND(S{row}<=2,F{row}<>"INTEGRAL"),((O{row}/30)*S{row})-BC{row},IF(AND(S{row}>2,F{row}<>"INTEGRAL"),((O{row}/30)*2)-BC{row},IF(AND(S{row}<=2,F{row}="INTEGRAL"),(((O{row}*70%)/30)*S{row})-BC{row},IF(AND(S{row}>2,F{row}="INTEGRAL"),(((O{row}*70%)/30)*2)-BC{row},0))))'
+        formula = f'=IF({col_IBC}{row}>0,IF(AND(S{row}<=2,F{row}<>"INTEGRAL"),(({col_IBC}{row}/30)*S{row})-BC{row},IF(AND(S{row}>2,F{row}<>"INTEGRAL"),(({col_IBC}{row}/30)*2)-BC{row},IF(AND(S{row}<=2,F{row}="INTEGRAL"),((({col_IBC}{row}*70%)/30)*S{row})-BC{row},IF(AND(S{row}>2,F{row}="INTEGRAL"),((({col_IBC}{row}*70%)/30)*2)-BC{row},0)))),IF(AND(S{row}<=2,F{row}<>"INTEGRAL"),((O{row}/30)*S{row})-BC{row},IF(AND(S{row}>2,F{row}<>"INTEGRAL"),((O{row}/30)*2)-BC{row},IF(AND(S{row}<=2,F{row}="INTEGRAL"),(((O{row}*70%)/30)*S{row})-BC{row},IF(AND(S{row}>2,F{row}="INTEGRAL"),(((O{row}*70%)/30)*2)-BC{row},0)))))'
         worksheet.write_formula(f"BD{row}", formula)
+
+
+
 
     # 0791 AUXILIO DE CONECTIVIDAD: Solo a quienes ganen menos de 2 smmlv
     for row in range(2,df_pruebas.shape[0]+2):
@@ -1188,6 +1215,9 @@ def agregar_columna_IBC(mes):
     # Eliminar filas y columnas basura
     column_names = df.columns
     columns_to_drop = [index for index, name in enumerate(column_names) if 'Unnamed' in name]
+    
+    global dataframe
+    
     dataframe = df.drop(df.columns[columns_to_drop], axis=1)
     dataframe = dataframe.dropna(how='all')
 
@@ -1205,8 +1235,9 @@ def agregar_columna_IBC(mes):
         columnaIBC = columnasDf[posicion]
     else:
         columnaIBC = None
-
-    df_ibc = pd.DataFrame(columns=['CODIGO', 'IBC'+columnaIBC])
+    
+    global df_ibc
+    df_ibc = pd.DataFrame(columns=['CODIGO', 'IBC'])
 
     # Recorrer las filas para organizar el dataframe, separar por código e IBC
     valueCodigo = ''
@@ -1216,15 +1247,14 @@ def agregar_columna_IBC(mes):
         count = count +1
         # verificar si la longitud de CODIGO es mayor a 4
         if len(row['CODIGO']) > 4:
-            
-            nueva_fila = {'CODIGO': row['CODIGO'], 'IBC '+columnaIBC: '0'}
+            nueva_fila = {'CODIGO': row['CODIGO'], 'IBC': '0'}
             valueCodigo = row['CODIGO']
         else:
             # verificar si el valor de CODIGO es igual a '9500'
             if row['CODIGO'] == '9500':
-                nueva_fila = {'CODIGO': valueCodigo, 'IBC '+columnaIBC: row[columnaIBC]}
-                df_ibc = df_ibc.append(nueva_fila, ignore_index=True)
-            
+                nueva_fila = {'CODIGO': valueCodigo, 'IBC': row[columnaIBC]}
+                nueva_fila_df = pd.DataFrame.from_dict(nueva_fila, orient="index").T
+                df_ibc = pd.concat([df_ibc, nueva_fila_df], ignore_index=True)
     # Quitar el digito de verificacion de cc 
 
     def limpiar_codigo(codigo):
@@ -1239,23 +1269,16 @@ def agregar_columna_IBC(mes):
 
     # Aplicamos la función a la columna CODIGO
     df_ibc['CODIGO'] = df_ibc['CODIGO'].apply(limpiar_codigo)
-
     # Dividir la columna 'codigo' en dos utilizando el carácter '-'
     codigo_dividido = df_ibc['CODIGO'].str.split('-', expand=True)
-
     # Asignar la primera columna al nuevo dataframe 'df_nuevo' como la columna 'CC'
     df_ibc = df_ibc.assign(CC=codigo_dividido[0])
-
     # Asignar la segunda columna al dataframe 'df_nuevo' como la columna 'NOMBRE'
     df_ibc['NOMBRE'] = codigo_dividido[1]
-
     # Quitar los espacios en blanco al principio y al final de la columna 'NOMBRE'
     df_ibc['NOMBRE'] = df_ibc['NOMBRE'].str.strip()
-
-    df_ibc = df_ibc[['CC','NOMBRE','IBC '+columnaIBC]]
-    
+    df_ibc = df_ibc[['CC','NOMBRE','IBC']]
     df_ibc['CC'] = df_ibc['CC'].apply(int)
-    
     return df_ibc
 
     
@@ -1274,19 +1297,11 @@ def calcular_0740():
     df_RevPrel = leer_RevPreliminar()
     
     global resultados,df_filtrado
-    print("1")
     df_filtrado = df_RevPrel.loc[abs(df_RevPrel['REVISIÓN 0740']) > 1000.0]
-    
-    print("2")
     resultados = df_filtrado.apply(calculo_fila, axis=1)
-    print("3")
     df_filtrado["0740-AJUSTADO"] = resultados
-    
 
-    
-    print("4")
     df_RevPrelxlsx = leer_RevPreliminar()
-    print("5")
     cc_en_df4 = set(df_filtrado['CC'])
     # Ahora, para cada cc en dfrevpreli que esté en df4, reemplazaremos el salario en dfrevpreli con el de df4
     for i, row in df_RevPrelxlsx.iterrows():
@@ -1296,15 +1311,10 @@ def calcular_0740():
         
     #--------------
 
-    print("7")
     writer = pd.ExcelWriter('.\\resultados\\Revision prueba-2DEMO.xlsx', engine="xlsxwriter")
-    print("8")
     df_RevPrelxlsx.to_excel(writer, sheet_name='Hoja1', index=False)
-    print("9")
     workbook  = writer.book
-    print("10")
     worksheet = writer.sheets['Hoja1']
-    print("11")
     agregar_formulas(df_RevPrelxlsx,worksheet,writer)
     #--------------
     #writer = pd.ExcelWriter('output.xlsx')
@@ -1314,10 +1324,9 @@ def calcular_0740():
 
     # Save the Excel file
     #writer.save()
-    
-    
-    print("")
-    
+  
+
+
 
 
 #----Interfaz-----------------------------------------------------------------#
